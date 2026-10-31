@@ -1,5 +1,8 @@
 # Manual probe — when there are no transcripts to mine
 
+Typical cases: a fresh machine, GitHub Copilot in VS Code agent mode (chat history
+is not stored as a readable transcript), or a policy that wipes sessions.
+
 You are about to orient on this repo the way any fresh session would. The only
 difference: **log every read, listing, search and command as you go**, in a
 scratch file, as one line each. That log *is* the repeated-items list — because
@@ -33,7 +36,8 @@ it is a single-session estimate.
 
 ## Other agents' transcripts, if you can find them
 
-Locations vary and change; check before claiming none exist. Common patterns:
+Locations vary and change; check before claiming none exist. Known: Copilot CLI
+keeps `~/.copilot/session-state/<id>/events.jsonl` (auto-detected). Common patterns:
 a `sessions/`, `.sessions/` or `session-state/` directory under the agent's
 dotfolder in `$HOME`; `.jsonl` or `.json` per session. Pass whatever you find to
 `analyze_transcripts.py --transcripts DIR`. Its text parser is heuristic for

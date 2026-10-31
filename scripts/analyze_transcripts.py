@@ -123,40 +123,100 @@ def iter_json_events(path: str):
                 yield data
 
 
+_PATH_KEYS = ("file_path", "filePath", "path", "file", "uri")
+_CMD_KEYS = ("command", "cmd", "commandLine", "script")
+_PAT_KEYS = ("pattern", "query", "regex", "searchString", "glob")
+_NAME_KEYS = ("name", "toolName", "tool_name", "tool", "function")
+_ARG_KEYS = ("input", "arguments", "args", "parameters", "params")
+
+
+def _generic_tool_calls(obj, depth=0):
+    """Walk any JSON event and yield (tool_name, args_dict) for anything that
+    looks like a tool call. Format-agnostic fallback for non-Claude agents
+    (GitHub Copilot CLI events.jsonl, Cursor, Codex, exported logs...)."""
+    if depth > 8:
+        return
+    if isinstance(obj, dict):
+        name = next((obj[k] for k in _NAME_KEYS if isinstance(obj.get(k), str)), None)
+        args = next((obj[k] for k in _ARG_KEYS if isinstance(obj.get(k), (dict, str))), None)
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except json.JSONDecodeError:
+                args = None
+        if name and isinstance(args, dict):
+            yield name, args
+        for v in obj.values():
+            yield from _generic_tool_calls(v, depth + 1)
+    elif isinstance(obj, list):
+        for v in obj:
+            yield from _generic_tool_calls(v, depth + 1)
+
+
+def _classify(name: str, inp: dict, repo: str, out: dict) -> bool:
+    """Route one tool call into reads/searches/commands. Returns True if used."""
+    lname = name.lower()
+    cmd = next((inp[k] for k in _CMD_KEYS if isinstance(inp.get(k), str)), None)
+    pat = next((inp[k] for k in _PAT_KEYS if isinstance(inp.get(k), str)), None)
+    path = next((inp[k] for k in _PATH_KEYS if isinstance(inp.get(k), str)), None)
+    if cmd and (name in SHELL_TOOLS or any(k in lname for k in ("bash", "shell", "terminal", "command", "powershell", "exec"))):
+        out["commands"].append(norm_cmd(cmd)); return True
+    if pat and (name in SEARCH_TOOLS or any(k in lname for k in ("grep", "glob", "search", "find"))):
+        out["searches"].append(f"{name}: {norm_cmd(pat)}"); return True
+    if path and (name in READ_TOOLS or any(k in lname for k in ("read", "view", "open", "cat"))):
+        out["reads"].append(norm_path(path, repo)); return True
+    if cmd:
+        out["commands"].append(norm_cmd(cmd)); return True
+    return False
+
+
+def _maybe_question(text, out):
+    if not isinstance(text, str):
+        return
+    q = text.strip()
+    if 8 < len(q) < 300 and not q.startswith("<") and (
+        "?" in q or q.lower().startswith(("how", "what", "where", "which", "why", "does", "is ", "can "))
+    ):
+        out["questions"].append(norm_cmd(q))
+
+
+def _extract_claude_shape(ev, repo: str, out: dict) -> bool:
+    """Claude Code transcript shape: {type, message:{role, content:[{type:tool_use,...}]}}."""
+    msg = ev.get("message", ev) if isinstance(ev, dict) else None
+    if not isinstance(msg, dict):
+        return False
+    role = msg.get("role") or ev.get("type")
+    content = msg.get("content")
+    if role == "user" and isinstance(content, str):
+        _maybe_question(content, out)
+    if not isinstance(content, list):
+        return False
+    used = False
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "tool_use":
+            continue
+        used = _classify(block.get("name", ""), block.get("input", {}) or {}, repo, out) or used
+    return used
+
+
+def _extract_generic(ev, repo: str, out: dict):
+    """Any other agent's JSON: walk for tool-call-like dicts and user text."""
+    for name, args in _generic_tool_calls(ev):
+        _classify(name, args, repo, out)
+    if isinstance(ev, dict):
+        role = str(ev.get("role") or ev.get("type") or ev.get("kind") or "").lower()
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        txt = ev.get("content") or ev.get("text") or ev.get("prompt") or data.get("content") or data.get("text")
+        if "user" in role:
+            _maybe_question(txt, out)
+
+
 def extract_from_json_transcript(path: str, repo: str, out: dict):
-    """Pull tool calls and user questions out of a Claude-Code-style transcript."""
+    """Pull tool calls and user questions out of a transcript. Tries the Claude
+    Code shape first, then a format-agnostic walk (Copilot CLI events.jsonl etc.)."""
     for ev in iter_json_events(path):
-        msg = ev.get("message", ev) if isinstance(ev, dict) else None
-        if not isinstance(msg, dict):
-            continue
-        role = msg.get("role") or ev.get("type")
-        content = msg.get("content")
-
-        # User questions (plain text, not injected system reminders)
-        if role == "user" and isinstance(content, str) and not content.lstrip().startswith("<"):
-            q = content.strip()
-            if 8 < len(q) < 300 and ("?" in q or q.lower().startswith(("how", "what", "where", "which", "why", "does", "is ", "can "))):
-                out["questions"].append(norm_cmd(q))
-
-        if not isinstance(content, list):
-            continue
-        for block in content:
-            if not isinstance(block, dict) or block.get("type") != "tool_use":
-                continue
-            name = block.get("name", "")
-            inp = block.get("input", {}) or {}
-            if name in READ_TOOLS or name.endswith("read_file"):
-                p = inp.get("file_path") or inp.get("path") or inp.get("filePath")
-                if p:
-                    out["reads"].append(norm_path(p, repo))
-            elif name in SEARCH_TOOLS:
-                pat = inp.get("pattern") or inp.get("query") or inp.get("regex")
-                if pat:
-                    out["searches"].append(f"{name}: {norm_cmd(str(pat))}")
-            elif name in SHELL_TOOLS or name.endswith("bash") or "command" in inp:
-                c = inp.get("command") or inp.get("cmd")
-                if c:
-                    out["commands"].append(norm_cmd(str(c)))
+        if not _extract_claude_shape(ev, repo, out):
+            _extract_generic(ev, repo, out)
 
 
 _MD_CMD = re.compile(r"^\s*(?:\$ |> |`)([a-zA-Z][^\n`]{3,150})`?", re.M)

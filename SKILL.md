@@ -37,8 +37,12 @@ python3 <skill-dir>/scripts/analyze_transcripts.py --repo . --top 30
 python3 <skill-dir>/scripts/analyze_transcripts.py --repo . --json > /tmp/repeats.json
 ```
 
-It auto-detects Claude Code transcripts (`~/.claude/projects/<encoded-cwd>/*.jsonl`).
-For other agents, or exported logs, pass `--transcripts DIR` (reads jsonl/json/md/txt).
+It auto-detects Claude Code transcripts (`~/.claude/projects/<encoded-cwd>/*.jsonl`)
+and GitHub Copilot CLI sessions (`~/.copilot/session-state/*/events.jsonl`). For
+other agents or exported logs pass `--transcripts DIR` (jsonl/json/md/txt; the
+parser is format-agnostic, so sanity-check counts on a format it has not seen).
+Copilot in VS Code agent mode does not persist readable transcripts; use the
+manual probe there.
 It reports commands, file reads, searches and user questions that recur **across
 sessions**, plus a first guess at subcommand clusters.
 
@@ -84,8 +88,9 @@ the commit sha and date you generated against in `GENERATED_FROM`.
 
 ### 4. Wire it into the agent's instructions
 
-Append to `AGENTS.md` (create it if absent; if the repo uses `CLAUDE.md`, put it
-there too — one short block, do not duplicate the CLI's content):
+Append to `AGENTS.md` (create it if absent). Both Claude Code and GitHub Copilot
+read it. If the repo also has `CLAUDE.md` or `.github/copilot-instructions.md`, add
+a one-line pointer there rather than duplicating the block:
 
 ```markdown
 ## agent-cli

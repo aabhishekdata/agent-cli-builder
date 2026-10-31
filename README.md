@@ -10,8 +10,19 @@ Copy this folder, unchanged, into a skills directory the agent reads:
 
 | Agent | Per-repo (committed, team-visible) | Per-user |
 |---|---|---|
+| GitHub Copilot (CLI, VS Code agent mode, coding agent) | `<repo>/.github/skills/agent-cli-builder/` (also reads `.claude/skills`, `.agents/skills`) | `~/.copilot/skills/agent-cli-builder/` or `~/.agents/skills/agent-cli-builder/` |
 | Claude Code | `<repo>/.claude/skills/agent-cli-builder/` | `~/.claude/skills/agent-cli-builder/` |
 | Other agents that read `SKILL.md` folders | their documented skills dir | — |
+
+One-liner for Copilot, personal install:
+
+```bash
+git clone https://github.com/aabhishekdata/agent-cli-builder ~/.copilot/skills/agent-cli-builder
+```
+
+Copilot asks before running the bundled scripts unless you pre-approve `shell`/`bash`
+in the skill's `allowed-tools`; the default (ask) is the right setting on a work
+machine.
 
 If the agent does not load skills at all, open `SKILL.md` and paste its Workflow
 section as the prompt; copy `scripts/` and `assets/` next to the repo and adjust
@@ -58,6 +69,8 @@ agent-cli-builder/
 
 - Nothing phones home; no installs. Safe to run on a locked-down machine with
   Python 3.8+.
-- Transcripts are read, never modified or copied out.
+- Transcripts are read, never modified or copied out. Claude Code and Copilot CLI
+  session locations are auto-detected; Copilot in VS Code keeps no readable
+  transcript, so the skill falls back to a guided manual probe.
 - Only `bin/agent-cli` and `AGENTS.md`/`CLAUDE.md` are meant to change in the repo.
 - If the checkout is read-only, the skill produces a patch instead.
