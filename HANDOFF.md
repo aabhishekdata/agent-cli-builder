@@ -26,6 +26,13 @@ Claude Code). Refresh cadence was changed from weekly to **daily with a quiet-da
   `events.jsonl`. CLI template runs; `doctor` exits 1 on TODOs as intended.
 - Not yet tested: a real Copilot CLI transcript; the full skill end-to-end in VS Code
   agent mode on a real repo.
+- 2026-11-01 fixes: Python 3.8/3.9 support (`from __future__ import annotations`);
+  Claude Code transcript folder encoding (every non-alphanumeric → `-`, so Windows and
+  paths with spaces/dots are found); VS Code Copilot Chat `chatSessions` auto-detect
+  with a low-yield warning; template `where` no longer needs a shell (ripgrep or
+  pure-Python fallback); `status`/`doctor` call git without a shell, so "git reachable"
+  can't falsely pass on Windows; Windows `python bin/agent-cli` documented; console
+  output can't crash on cp1252. Code-read and syntax-checked only, not run end to end.
 
 ## Install / use (the version Abhishek needs)
 
@@ -56,7 +63,8 @@ tell Copilot "doctor is failing, fix agent-cli".
 ## Open items / next steps
 
 1. First real run on a work repo in VS Code. Expect the **manual-probe path** (VS Code
-   agent mode keeps no readable transcript). Check that the two user questions get asked
+   saves chats, but in an undocumented format that usually lacks tool-call details;
+   the analyzer now finds them and warns when yield is low). Check that the two user questions get asked
    and that only `bin/agent-cli` + `AGENTS.md` change.
 2. Validate the generic parser against a real `~/.copilot/session-state/*/events.jsonl`
    if Copilot CLI is ever available; adjust `_NAME_KEYS`/`_ARG_KEYS` in the analyzer if

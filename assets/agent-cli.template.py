@@ -9,15 +9,20 @@ Regenerate / extend: see the "agent-cli" section in AGENTS.md (or CLAUDE.md).
     ./bin/agent-cli <cmd> --help
     ./bin/agent-cli doctor     # self-check: is this CLI still telling the truth?
 
+On Windows: `python bin/agent-cli <cmd>` (no shebang support).
+
 PLACEHOLDERS — the agent generating this file should replace every TODO
 with facts discovered from the repo and the repeated-items report. Do not
 ship a subcommand whose answer is hard-coded if it can be computed from the
 repo at run time; computed answers do not drift.
 """
+from __future__ import annotations  # keeps `str | None` hints working on Python 3.8/3.9
+
 import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -37,6 +42,16 @@ def sh(cmd: str, cwd: str = ROOT, timeout: int = 60) -> str:
         return (r.stdout or r.stderr).strip()
     except subprocess.TimeoutExpired:
         return f"<timeout after {timeout}s>"
+
+
+def git(*args: str) -> tuple[bool, str]:
+    """Run git without a shell, so it behaves the same on Windows and POSIX.
+    Returns (ok, stdout); ok is False if git is missing or exits non-zero."""
+    try:
+        r = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, timeout=30)
+        return r.returncode == 0, r.stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return False, ""
 
 
 def emit(data, as_json: bool, text_fn=None):
@@ -106,22 +121,54 @@ def cmd_map(args):
 def cmd_status(args):
     """Git orientation in one call: branch, dirty files, last commits."""
     data = {
-        "branch": sh("git rev-parse --abbrev-ref HEAD"),
-        "dirty": sh("git status --porcelain").splitlines(),
-        "recent": sh("git log --oneline -8").splitlines(),
+        "branch": git("rev-parse", "--abbrev-ref", "HEAD")[1],
+        "dirty": git("status", "--porcelain")[1].splitlines(),
+        "recent": git("log", "--oneline", "-8")[1].splitlines(),
     }
     emit(data, args.json)
+
+
+SKIP_DIRS = {".git", "node_modules", "dist", "build", "__pycache__", ".venv", "venv"}  # TODO tune
+SKIP_EXT = (".lock", ".min.js", ".map", ".png", ".jpg", ".gif", ".pdf", ".zip")
+
+
+def _py_search(term: str, limit: int) -> list[str]:
+    """Pure-Python fallback when ripgrep isn't installed (stock Windows has no grep)."""
+    hits = []
+    for dirpath, dirnames, filenames in os.walk(ROOT):
+        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
+        for name in sorted(filenames):
+            if name.endswith(SKIP_EXT):
+                continue
+            path = os.path.join(dirpath, name)
+            try:
+                with open(path, encoding="utf-8", errors="strict") as fh:
+                    for n, line in enumerate(fh, 1):
+                        if term in line:
+                            hits.append(f"{os.path.relpath(path, ROOT)}:{n}:{line.strip()[:200]}")
+                            if len(hits) >= limit:
+                                return hits
+            except (UnicodeDecodeError, OSError):
+                continue                                   # binary or unreadable
+    return hits
 
 
 def cmd_where(args):
     """Find where a symbol/term lives. Knows which dirs matter and which to skip."""
     term = args.term
-    exclude = "--glob '!node_modules' --glob '!dist' --glob '!*.lock'"   # TODO tune
-    if sh("command -v rg"):
-        out = sh(f"rg -n --no-heading {exclude} {json.dumps(term)} .", timeout=30)
+    rg = shutil.which("rg")
+    if rg:
+        cmd = [rg, "-n", "--no-heading", "--fixed-strings"]
+        for d in SKIP_DIRS:
+            cmd += ["--glob", f"!{d}"]
+        cmd += ["--glob", "!*.lock", "--", term, "."]
+        try:
+            out = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=30).stdout
+        except subprocess.TimeoutExpired:
+            out = ""
+        hits = [l for l in out.splitlines() if l][: args.limit]
     else:
-        out = sh(f"grep -rn --exclude-dir=node_modules --exclude-dir=.git {json.dumps(term)} .", timeout=30)
-    hits = [l for l in out.splitlines() if l][: args.limit]
+        hits = _py_search(term, args.limit)
     emit({"term": term, "hits": hits}, args.json, lambda d: "\n".join(d["hits"]) or "(no hits)")
 
 
@@ -179,8 +226,8 @@ def cmd_doctor(args):
     check("no TODO placeholders left", "TODO" not in open(__file__, encoding="utf-8").read().split("def cmd_doctor")[0].replace('"""', "")
           or args.allow_todo, "run with --allow-todo while scaffolding")
     check("generated-from sha recorded", "TODO" not in GENERATED_FROM, GENERATED_FROM)
-    head = sh("git rev-parse --short HEAD 2>/dev/null")
-    check("git reachable", bool(head) and not head.startswith("fatal"), head or "no commits yet")
+    ok, head = git("rev-parse", "--short", "HEAD")
+    check("git reachable", ok and bool(head), head or "git missing, not a repo, or no commits yet")
 
     failed = [c for c in checks if not c["ok"]]
     emit({"version": CLI_VERSION, "generated_from": GENERATED_FROM, "checks": checks, "failed": len(failed)},
@@ -214,6 +261,8 @@ def main(argv=None):
     add("faq", cmd_faq, "answers to repeatedly asked questions", lambda p: p.add_argument("question", nargs="?"))
     add("doctor", cmd_doctor, "validate this CLI against the repo", lambda p: p.add_argument("--allow-todo", action="store_true"))
 
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="replace")   # Windows consoles (cp1252) can't print every character
     args = ap.parse_args(argv)
     if not args.cmd:
         # Default: the cheapest possible orientation.

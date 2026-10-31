@@ -68,9 +68,13 @@ agent-cli-builder/
 ## Enterprise notes
 
 - Nothing phones home; no installs. Safe to run on a locked-down machine with
-  Python 3.8+.
-- Transcripts are read, never modified or copied out. Claude Code and Copilot CLI
-  session locations are auto-detected; Copilot in VS Code keeps no readable
-  transcript, so the skill falls back to a guided manual probe.
+  Python 3.8+ (macOS, Linux or Windows).
+- Transcripts are read, never modified or copied out. Claude Code, Copilot CLI and
+  VS Code Copilot Chat session locations are auto-detected. VS Code saves chats in an
+  undocumented format that usually lacks tool-call details, so expect a low-yield
+  warning there and the guided manual probe instead.
+- Windows: run the analyzer with `python` or `py`, and the generated CLI as
+  `python bin/agent-cli` (no shebang). `where` falls back to a pure-Python search
+  when ripgrep isn't installed.
 - Only `bin/agent-cli` and `AGENTS.md`/`CLAUDE.md` are meant to change in the repo.
 - If the checkout is read-only, the skill produces a patch instead.

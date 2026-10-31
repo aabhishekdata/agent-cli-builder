@@ -37,12 +37,18 @@ python3 <skill-dir>/scripts/analyze_transcripts.py --repo . --top 30
 python3 <skill-dir>/scripts/analyze_transcripts.py --repo . --json > /tmp/repeats.json
 ```
 
-It auto-detects Claude Code transcripts (`~/.claude/projects/<encoded-cwd>/*.jsonl`)
-and GitHub Copilot CLI sessions (`~/.copilot/session-state/*/events.jsonl`). For
-other agents or exported logs pass `--transcripts DIR` (jsonl/json/md/txt; the
-parser is format-agnostic, so sanity-check counts on a format it has not seen).
-Copilot in VS Code agent mode does not persist readable transcripts; use the
-manual probe there.
+On Windows, use `python` (or `py`) instead of `python3`, and write the JSON to a
+path that exists there (e.g. `%TEMP%\repeats.json`).
+
+It auto-detects Claude Code transcripts (`~/.claude/projects/<encoded-cwd>/*.jsonl`),
+GitHub Copilot CLI sessions (`~/.copilot/session-state/*/events.jsonl`) and GitHub
+Copilot Chat sessions saved by VS Code for this folder
+(`<VS Code user dir>/workspaceStorage/<hash>/chatSessions/`). For other agents or
+exported logs pass `--transcripts DIR` (jsonl/json/md/txt; the parser is
+format-agnostic, so sanity-check counts on a format it has not seen).
+VS Code's chat format is undocumented and often omits tool-call arguments, so the
+analyzer usually extracts little from it and prints a low-yield warning. When it
+does, use the manual probe and treat the report as a hint.
 It reports commands, file reads, searches and user questions that recur **across
 sessions**, plus a first guess at subcommand clusters.
 
@@ -61,6 +67,8 @@ cannot mine.
 ### 3. Build `./bin/agent-cli`
 
 Copy `assets/agent-cli.template.py` to `./bin/agent-cli`, `chmod +x`, and fill it.
+On Windows there is no shebang or `chmod`: the CLI runs as `python bin/agent-cli`,
+so use that form everywhere you write the command (AGENTS.md block included).
 Read `references/design-rules.md` first; the rules there are what make the output
 useful to an agent rather than another README.
 
@@ -99,6 +107,9 @@ guessing commands. `--json` on all subcommands. If `./bin/agent-cli doctor` fail
 fix the CLI before trusting its other output. Add a subcommand when you catch
 yourself repeating a lookup; refresh with the agent-cli-builder skill.
 ```
+
+On a repo developed on Windows, write the commands as `python bin/agent-cli`
+(and `python bin/agent-cli doctor`); if the team is mixed, give both forms.
 
 ### 5. Validate, then clean up after yourself
 

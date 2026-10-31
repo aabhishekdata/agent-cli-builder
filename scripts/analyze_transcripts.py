@@ -15,7 +15,11 @@ Usage:
   python3 analyze_transcripts.py --transcripts DIR    # any *.jsonl / *.json / *.md / *.txt
   python3 analyze_transcripts.py --json               # machine-readable
   python3 analyze_transcripts.py --min-sessions 2 --top 25
+
+On Windows use `python` or `py` instead of `python3`.
 """
+from __future__ import annotations  # keeps `str | None` hints working on Python 3.8/3.9
+
 import argparse
 import glob
 import json
@@ -23,17 +27,69 @@ import os
 import re
 import sys
 from collections import Counter, defaultdict
+from urllib.parse import unquote, urlparse
 
 # ----------------------------------------------------------------------------
 # Locating transcripts
 # ----------------------------------------------------------------------------
 
 def claude_code_project_dir(repo: str) -> str:
-    """Claude Code stores transcripts at ~/.claude/projects/<cwd with / -> ->/*.jsonl"""
+    """Claude Code stores transcripts at ~/.claude/projects/<encoded cwd>/*.jsonl,
+    where every non-alphanumeric character of the absolute path becomes '-'
+    (/home/me/my.repo -> -home-me-my-repo, C:\\Work\\My Repo -> C--Work-My-Repo)."""
+    encoded = re.sub(r"[^A-Za-z0-9]", "-", os.path.abspath(repo))
+    return os.path.join(os.path.expanduser("~"), ".claude", "projects", encoded)
+
+
+def _legacy_claude_code_project_dir(repo: str) -> str:
+    """Older guess (separator-only replacement); still checked so nothing regresses."""
     encoded = os.path.abspath(repo).replace(os.sep, "-")
     if not encoded.startswith("-"):
         encoded = "-" + encoded
     return os.path.join(os.path.expanduser("~"), ".claude", "projects", encoded)
+
+
+def _vscode_user_dirs() -> list[str]:
+    """VS Code (and Insiders) user-data dirs for this OS."""
+    home = os.path.expanduser("~")
+    if sys.platform.startswith("win"):
+        base = os.environ.get("APPDATA", os.path.join(home, "AppData", "Roaming"))
+    elif sys.platform == "darwin":
+        base = os.path.join(home, "Library", "Application Support")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME", os.path.join(home, ".config"))
+    return [os.path.join(base, name, "User") for name in ("Code", "Code - Insiders")]
+
+
+def _same_path(a: str, b: str) -> bool:
+    return os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
+
+
+def vscode_chat_dirs(repo: str) -> list[str]:
+    """GitHub Copilot Chat in VS Code saves sessions per workspace at
+    <user dir>/workspaceStorage/<hash>/chatSessions/*.json(l). The hash folder's
+    workspace.json holds the folder URI, which is how we match it to this repo.
+    The file format is undocumented and changes between releases, so parsing
+    is heuristic: treat the counts as a hint, not a measurement."""
+    repo_abs = os.path.abspath(repo)
+    found = []
+    for user_dir in _vscode_user_dirs():
+        for ws in glob.glob(os.path.join(user_dir, "workspaceStorage", "*", "workspace.json")):
+            try:
+                with open(ws, encoding="utf-8") as fh:
+                    uri = json.load(fh).get("folder", "")
+            except (OSError, ValueError, AttributeError):
+                continue
+            parsed = urlparse(uri)
+            if parsed.scheme != "file":
+                continue
+            path = unquote(parsed.path)
+            if re.match(r"^/[A-Za-z]:", path):      # file:///c%3A/... -> c:/...
+                path = path[1:]
+            chat = os.path.join(os.path.dirname(ws), "chatSessions")
+            if _same_path(path, repo_abs) and os.path.isdir(chat):
+                found.append(chat)
+    return found
 
 
 def find_transcripts(repo: str, explicit_dir: str | None) -> list[str]:
@@ -43,8 +99,11 @@ def find_transcripts(repo: str, explicit_dir: str | None) -> list[str]:
             candidates += glob.glob(os.path.join(explicit_dir, "**", f"*.{ext}"), recursive=True)
         return sorted(set(candidates))
 
-    cc = claude_code_project_dir(repo)
-    candidates += glob.glob(os.path.join(cc, "*.jsonl"))
+    for cc in (claude_code_project_dir(repo), _legacy_claude_code_project_dir(repo)):
+        candidates += glob.glob(os.path.join(cc, "*.jsonl"))
+
+    for chat in vscode_chat_dirs(repo):
+        candidates += glob.glob(os.path.join(chat, "*.json")) + glob.glob(os.path.join(chat, "*.jsonl"))
 
     # Common alternative locations other agents / teams use. Harmless if absent.
     for p in (
@@ -209,6 +268,29 @@ def _extract_generic(ev, repo: str, out: dict):
         txt = ev.get("content") or ev.get("text") or ev.get("prompt") or data.get("content") or data.get("text")
         if "user" in role:
             _maybe_question(txt, out)
+        _vscode_questions(ev, out)
+
+
+def _vscode_questions(obj, out, depth=0):
+    """VS Code chat sessions keep each turn in a `requests` list with the user's
+    prompt at request.message.text (no role field). Shape unverified across
+    releases; harmless if absent."""
+    if depth > 4:
+        return
+    if isinstance(obj, dict):
+        reqs = obj.get("requests")
+        if isinstance(reqs, list):
+            for r in reqs:
+                msg = r.get("message") if isinstance(r, dict) else None
+                if isinstance(msg, dict):
+                    _maybe_question(msg.get("text"), out)
+            return
+        for v in obj.values():
+            if isinstance(v, (dict, list)):
+                _vscode_questions(v, out, depth + 1)
+    elif isinstance(obj, list):
+        for v in obj:
+            _vscode_questions(v, out, depth + 1)
 
 
 def extract_from_json_transcript(path: str, repo: str, out: dict):
@@ -326,11 +408,14 @@ def main():
     ap.add_argument("--top", type=int, default=30)
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="replace")   # Windows consoles (cp1252) can't print every character
 
     files = find_transcripts(args.repo, args.transcripts)
     if not files:
         msg = {"error": "no transcripts found",
-               "looked_in": [claude_code_project_dir(args.repo)] + ([args.transcripts] if args.transcripts else []),
+               "looked_in": [claude_code_project_dir(args.repo), "VS Code workspaceStorage/*/chatSessions",
+                             "~/.copilot/session-state"] + ([args.transcripts] if args.transcripts else []),
                "hint": "pass --transcripts DIR, or run the manual probe in SKILL.md"}
         print(json.dumps(msg, indent=2) if args.json else f"No transcripts found. Looked in: {msg['looked_in']}\nHint: {msg['hint']}", file=sys.stderr)
         sys.exit(2)
@@ -353,13 +438,22 @@ def main():
         for k in report:
             report[k] = [r for r in report[k] if r["total"] >= 2]
     ideas = suggest_subcommands(report)
+    # Transcripts found but almost nothing extracted: likely an unknown format
+    # (VS Code chat sessions often store tool calls without their arguments).
+    extracted = sum(len(d[k]) for d in per_session.values() for k in ("commands", "reads", "searches"))
+    low_yield = extracted < 3 * max(1, len(files))
+    hint = ("transcripts found but few tool calls extracted; the format may not be "
+            "parseable. Use the manual probe (references/manual-probe.md) and treat "
+            "this report as a hint only.") if low_yield else None
 
     if args.json:
         print(json.dumps({"files": len(files), "sessions": len(per_session), "min_sessions": min_sessions,
-                          "report": report, "suggested_subcommands": ideas}, indent=2))
+                          "report": report, "suggested_subcommands": ideas, "warning": hint}, indent=2))
     else:
+        if hint:
+            print(f"WARNING: {hint}\n")
         if min_sessions == 1:
-            print("(only one usable session found — showing within-session repeats)\n")
+            print(f"(only {len(per_session)} usable session(s) found - showing within-session repeats)\n")
         print_text(report, ideas, len(per_session), len(files))
 
 

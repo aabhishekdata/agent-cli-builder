@@ -1,7 +1,8 @@
 # Manual probe — when there are no transcripts to mine
 
-Typical cases: a fresh machine, GitHub Copilot in VS Code agent mode (chat history
-is not stored as a readable transcript), or a policy that wipes sessions.
+Typical cases: a fresh machine, GitHub Copilot in VS Code agent mode (chats are
+saved, but in an undocumented format that usually lacks tool-call details, so the
+analyzer extracts little), or a policy that wipes sessions.
 
 You are about to orient on this repo the way any fresh session would. The only
 difference: **log every read, listing, search and command as you go**, in a
